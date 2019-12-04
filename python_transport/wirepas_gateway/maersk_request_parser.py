@@ -17,6 +17,9 @@ class MaerskGatewayRequestParser():
     
     """    
 
+    REQUEST_STATUS = 'gw_status_req'
+    REQUEST_RTC    = 'gw_setrtc_req'
+
     def __init__(self, logger=None):
         self.logger = logger or logging.getLogger(__name__)
         self.epoch_ms = int(time() * 1000)
@@ -48,8 +51,10 @@ class MaerskGatewayRequestParser():
             raise MaerskParsingException("ttl expired - (gateway {} < request {})".format(self.epoch_ms, request.header.time_to_live_epoch_ms))
             
         # Parse request
-        if gateway_req.HasField('gw_status_req'):
-            return self.reply_gw_status_req(customer)
+        if gateway_req.HasField(MaerskGatewayRequestParser.REQUEST_STATUS):
+            return (MaerskGatewayRequestParser.REQUEST_STATUS, self.reply_gw_status_req(customer))
+        elif gateway_req.HasField(MaerskGatewayRequestParser.REQUEST_RTC):
+            return (MaerskGatewayRequestParser.REQUEST_RTC, self._reply_gw_setrtc_req(customer))
         
         else:
             raise MaerskParsingException("request not implemented")
@@ -65,10 +70,26 @@ class MaerskGatewayRequestParser():
         Response.add_gateway_status(reply, req_id)
 
         return reply.SerializeToString()
-        
-        
-        
-        
+
+
+    def _reply_gw_setrtc_req(self, customerReq):
+        """
+
+        """ 
+
+        reply = wirepas_messaging.gateway.GenericMessage()
+        reply.customer.customer_name = customerReq.customer_name
+
+        reply.customer.response.header.gateway_epoch_ms = self.epoch_ms 
+        reply.customer.response.gateway_resp.header.req_id = customerReq.request.gateway_req.header.req_id
+        reply.customer.response.gateway_resp.header.gw_id = Response.gw_id
+        reply.customer.response.gateway_resp.header.res = GatewayResultCode.GW_RES_OK.value
+
+        reply.customer.response.gateway_resp.gw_setrtc_resp.SetInParent()
+
+        return reply.SerializeToString()
+
+
 class MaerskParsingException(Exception):
     def __init__(self, msg):
         super().__init__(msg)
