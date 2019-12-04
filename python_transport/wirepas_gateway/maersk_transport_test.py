@@ -97,6 +97,17 @@ class TransportService():
             self.mqtt_wrapper.publish("gw-request/exec_cmd/" + self.gw_id, message.SerializeToString(), qos=2)
             self.logger.info("published!")
 
+            # send Req
+            message = wirepas_messaging.gateway.GenericMessage()
+            message.customer.customer_name = "Maersk"
+
+            message.customer.request.header.time_to_live_epoch_ms = int(time.time() * 1000) + 1000
+            message.customer.request.gateway_req.header.req_id = 22
+            message.customer.request.gateway_req.gw_setrtc_req.SetInParent()
+
+            self.mqtt_wrapper.publish("gw-request/exec_cmd/" + self.gw_id, message.SerializeToString(), qos=2)
+            self.logger.info("published!")
+
         except Exception as e:
             self.logger.error(str(e))
 
@@ -138,24 +149,28 @@ class TransportService():
                 raise MaerskParsingException("Cannot parse gateway_resp field")
             gateway_resp = response.gateway_resp
 
-            if not gateway_resp.HasField('gw_status_resp'):
-                raise MaerskParsingException("response not implemented")
+            if gateway_resp.HasField('gw_status_resp'):
+                self.logger.info(" Type is gw_status_resp")
+                self.logger.info(" Customer_name %s, epoch %d, request id %d",
+                    customer.customer_name,
+                    customer.response.header.gateway_epoch_ms, 
+                    customer.response.gateway_resp.header.req_id
+                )
+                self.logger.info(" Gateway id %s, result %d",
+                    customer.response.gateway_resp.header.gw_id,
+                    customer.response.gateway_resp.header.res
+                )
+                self.logger.info(" App %s, wirepas %s, IMSI %d", 
+                    customer.response.gateway_resp.gw_status_resp.app_software,
+                    customer.response.gateway_resp.gw_status_resp.wirepas_software,
+                    customer.response.gateway_resp.gw_status_resp.imsi
+                )
 
+            elif gateway_resp.HasField('gw_setrtc_resp'):
+                self.logger.info(" Type is gw_setrtc_resp")
 
-            self.logger.info(" Customer_name %s, epoch %d, request id %d",
-                customer.customer_name,
-                customer.response.header.gateway_epoch_ms, 
-                customer.response.gateway_resp.header.req_id
-            )
-            self.logger.info(" Gateway id %s, result %d",
-                customer.response.gateway_resp.header.gw_id,
-                customer.response.gateway_resp.header.res
-            )
-            self.logger.info(" App %s, wirepas %s, IMSI %d", 
-                customer.response.gateway_resp.gw_status_resp.app_software,
-                customer.response.gateway_resp.gw_status_resp.wirepas_software,
-                customer.response.gateway_resp.gw_status_resp.imsi
-            )
+            else:
+               raise MaerskParsingException("response not implemented")
 
         except Exception as e:
             self.logger.error(str(e))

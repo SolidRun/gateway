@@ -24,6 +24,7 @@ from GPS_Service_pb2 import *
 import GPS_Service_pb2_grpc
 
 import maersk_request_parser
+import cbor2
 
 import wirepas_messaging
 from wirepas_messaging.gateway.api.response import Response
@@ -749,7 +750,12 @@ class TransportService(BusClient):
         self.logger.info("Gateway request received")
 
         try:
-            response = maersk_request_parser.MaerskGatewayRequestParser(self.logger).parse(message.payload)
+            req_name, response = maersk_request_parser.MaerskGatewayRequestParser(self.logger).parse(message.payload)
+            self.logger.info("request is " + req_name)
+
+            if req_name == maersk_request_parser.MaerskGatewayRequestParser.REQUEST_RTC:
+                self._send_setrtc()
+
             self.mqtt_wrapper.publish("gw-response/exec_cmd/" + self.gw_id, response, qos=2)
 
         except Exception as e:
@@ -763,6 +769,27 @@ class TransportService(BusClient):
         try:
             response = maersk_request_parser.MaerskGatewayRequestParser(self.logger).reply_gw_status_req()
             self.mqtt_wrapper.publish("gw-response/exec_cmd/" + self.gw_id, response, qos=2)
+
+        except Exception as e:
+            self.logger.error(str(e))
+
+
+    def _send_setrtc(self):
+        self.logger.info("Send setrtc broadcast")
+
+        try:
+            cbor_obj = cbor2.CBORTag(268, {0: 20, 3: {0: {1: {0: 0}}, 1: {5: {0: int(time())}}}})
+            cbor_payload = cbor2.dumps(cbor_obj)
+
+            for sink in self.sink_manager.get_sinks():
+                sink.send_data(
+                    0xFFFFFFFF, # Broadcast
+                    101,        # src EP
+                    101,        # dst EP
+                    0,          # QoS
+                    0,          # Delay
+                    cbor_payload
+                )
 
         except Exception as e:
             self.logger.error(str(e))
