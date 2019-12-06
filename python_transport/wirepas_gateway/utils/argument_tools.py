@@ -332,6 +332,31 @@ class ParserHelper:
             ),
         )
 
+    def add_maersk_settings(self):
+        """ Parameters for maersk features """
+        self.maersk.add_argument(
+            "--setrtc_broadcast_period",
+            default=3600,
+            action="store",
+            type=int,
+            help=(
+                "Delay in seconds between two periodic"
+                "setrtc broadcast to clients (0 will disable feature)"
+            ),
+        )
+
+        self.maersk.add_argument(
+            "--ntp_sync_validity",
+            default=24,
+            action="store",
+            type=int,
+            help=(
+                "Duration in hour of the validity of a NTP synchronisation"
+                " (0 is not allowed)"
+            ),
+        )
+
+
     @staticmethod
     def _deprecated_message(new_arg_name, deprecated_from="2.x"):
         """ Alerts the user that an argument will be deprecated within the
