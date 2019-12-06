@@ -69,7 +69,6 @@ setup(
     keywords=about["__keywords__"],
     packages=find_packages(exclude=["contrib", "docs", "tests", "examples"]),
     install_requires=get_requirements("requirements.txt"),
-    python_requires=">=3.7",
     ext_modules=[
         Extension(
             "dbusCExtension",
@@ -78,10 +77,17 @@ setup(
         )
     ],
     include_package_data=True,
+    package_data={"wirepas_gateway": ["wirepas_gateway/wirepas_certs/extwirepas.pem"]},
     data_files=[
         (
             "./wirepas_gateway-extras/package",
-            [readme_file, license_file, "requirements.txt", "setup.py"],
+            [
+                readme_file,
+                license_file,
+                "requirements.txt",
+                "wirepas_gateway/wirepas_certs/extwirepas.pem",
+                "setup.py",
+            ],
         )
     ],
     entry_points={

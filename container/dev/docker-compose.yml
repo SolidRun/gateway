@@ -8,15 +8,14 @@ services:
 
     wm-sink:
         container_name: wm-sink
-        image: ${IMAGE_NAME:-wirepas/gateway:edge}
+        image: ${IMAGE_NAME:-wirepas/gateway-x86:edge}
         build:
             context: ../..
-            dockerfile: container/Dockerfile
+            dockerfile: container/dev/Dockerfile
             args:
-                DOCKER_BASE: ${DOCKER_BASE:-ubuntu:18.04}
+                DOCKER_BASE: ${DOCKER_BASE:-wirepas/base:1.1-ubuntu}
                 IMAGE_NAME: ${IMAGE_NAME:-wirepas/gateway-x86:edge}
                 VERSION: ${VERSION:-"local"}
-                SOURCE_PATH: "."
                 BUILD_DATE: ${BUILD_DATE}
                 CROSS_BUILD_START_CMD: ${CROSS_BUILD_START_CMD}
                 CROSS_BUILD_END_CMD: ${CROSS_BUILD_END_CMD}
@@ -60,7 +59,6 @@ services:
 
         volumes:
             - /var/run/dbus/system_bus_socket:/var/run/dbus/system_bus_socket
-            # - ./my-tls-file:/etc/my-tls-file
 
         logging:
             driver: journald

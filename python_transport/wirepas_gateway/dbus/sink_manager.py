@@ -80,10 +80,6 @@ class Sink:
         except GLib.Error as e:
             self.logger.exception("Fail to send message: %s", e.message)
             return ReturnCode.error_from_dbus_exception(e.message)
-        except OverflowError:
-            # It may happens as protobuf has bigger container value
-            self.logger.error("Invalid range value")
-            return GatewayResultCode.GW_RES_INVALID_PARAM
 
         return GatewayResultCode.GW_RES_OK
 
@@ -98,7 +94,7 @@ class Sink:
     def _get_param(self, dic, key, attribute):
         try:
             dic[key] = getattr(self.proxy, attribute)
-        except (GLib.Error, AttributeError):
+        except GLib.Error:
             # Exception raised when getting attribute (probably not set)
             # Discard channel_map as parameter present only for old stacks
             if key != "channel_map":
@@ -185,27 +181,15 @@ class Sink:
                 self.sink_id,
                 e.message,
             )
-            return ReturnCode.error_from_dbus_exception(e.message)
-        except OverflowError:
-            # It may happens as protobuf has bigger container value
-            self.logger.error(
-                "Invalid range value for param %s with value %s", key, value
-            )
-            return GatewayResultCode.GW_RES_INVALID_PARAM
-
-        return GatewayResultCode.GW_RES_OK
+            raise RuntimeError(ReturnCode.error_from_dbus_exception(e.message))
 
     def write_config(self, config):
         # Should always be available
         try:
             stack_started = (self.proxy.StackStatus & 0x01) == 0
         except GLib.Error as e:
-            res = ReturnCode.error_from_dbus_exception(e.message)
-            self.logger.error(
-                "Cannot get Stack state. Problem in communication probably: %s",
-                res.name,
-            )
-            return res
+            self.logger.error("Cannot get Stack state. Problem in com probably")
+            return ReturnCode.error_from_dbus_exception(e.message)
 
         # The write config has only one return code possible
         # so the last error code will be returned
@@ -218,17 +202,14 @@ class Sink:
             data = config["app_config_data"]
 
             self.logger.info("Set app config with %s", config)
+
             self.proxy.SetAppConfig(seq, diag, data)
         except KeyError:
             # App config not defined in new config
             self.logger.debug("Missing key app_config key in config: %s", config)
         except GLib.Error as e:
             res = ReturnCode.error_from_dbus_exception(e.message)
-            self.logger.error("Cannot set App Config: %s", res.name)
-        except OverflowError:
-            # It may happens as protobuf has bigger container value
-            res = GatewayResultCode.GW_RES_INVALID_PARAM
-            self.logger.error("Invalid range value")
+            self.logger.exception("Cannot set App Config %s", e.message)
 
         config_to_dbus_param = dict(
             [
@@ -244,11 +225,11 @@ class Sink:
 
         # Any following call will stop the stack
         for param in config_to_dbus_param:
-            tmp = self._set_param(config, param, config_to_dbus_param[param])
-            if tmp != GatewayResultCode.GW_RES_OK:
-                # Update result code only if not success to avoid erasing
-                # previous error (only one return code)
-                res = tmp
+            try:
+                self._set_param(config, param, config_to_dbus_param[param])
+            except RuntimeError as e:
+                self.logger.exception("Runtime error when setting parameter")
+                res = e.args[0]
 
         # Set stack in state defined by new config or set it as it was
         # previously
@@ -259,20 +240,10 @@ class Sink:
             new_state = stack_started
 
         try:
-            current_state = (self.proxy.StackStatus & 0x01) == 0
-            # Change stack state only if needed to avoid unnecessary events
-            if current_state != new_state:
-                self.logger.debug(
-                    "Change stack state from %s to %s", current_state, new_state
-                )
-                self.proxy.SetStackState(new_state)
+            self.proxy.SetStackState(new_state)
         except GLib.Error as err:
-            res = ReturnCode.error_from_dbus_exception(err.message)
-            self.logger.exception(
-                "Cannot set Stack state. Problem in communication probably: %s",
-                res.name,
-            )
-            return res
+            self.logger.exception("Cannot set Stack state. Problem in com probably")
+            return ReturnCode.error_from_dbus_exception(err.message)
 
         # In case the network address was updated, read it back for our cached
         # value
@@ -295,7 +266,7 @@ class Sink:
             d["stored_status"] = dbus_to_gateway_satus[status]
         except GLib.Error:
             # Exception raised when getting attribute (probably not set)
-            self.logger.error("Cannot get stored status in config")
+            self.logger.error("Cannot get stored status in config\n")
         except KeyError:
             # Between 1 and 254 => Error
             self.logger.error("Scratchpad stored status has error: %s", status)
@@ -346,15 +317,15 @@ class Sink:
         try:
             self.proxy.ProcessScratchpad()
         except GLib.Error as e:
+            self.logger.error("Could not restart sink's state")
             ret = ReturnCode.error_from_dbus_exception(e.message)
-            self.logger.error("Could not restore sink's state: %s", ret.name)
 
         if restart:
             try:
                 self.proxy.SetStackState(True)
-            except GLib.Error as e:
-                ret = ReturnCode.error_from_dbus_exception(e.message)
-                self.logger.debug("Sink in invalid state: %s", ret.name)
+            except GLib.Error:
+                self.logger.debug("Sink in invalid state")
+                ret = GatewayResultCode.GW_RES_INTERNAL_ERROR
 
         return ret
 
@@ -376,20 +347,16 @@ class Sink:
                 "Scratchpad loaded with seq %d on sink %s", seq, self.sink_id
             )
         except GLib.Error as e:
+            self.logger.exception("Cannot upload local scratchpad")
             ret = ReturnCode.error_from_dbus_exception(e.message)
-            self.logger.error("Cannot upload local scratchpad: %s", ret.name)
-        except OverflowError:
-            # It may happens as protobuf has bigger container value
-            ret = GatewayResultCode.GW_RES_INVALID_PARAM
-            self.logger.error("Invalid range value")
 
         if restart:
             try:
                 # Restart sink if we stopped it for this request
                 self.proxy.SetStackState(True)
-            except GLib.Error as e:
-                ret = ReturnCode.error_from_dbus_exception(e.message)
-                self.logger.error("Could not restore sink's state: %s", ret.name)
+            except GLib.Error:
+                self.logger.error("Could not restart sink's state")
+                ret = GatewayResultCode.GW_RES_INTERNAL_ERROR
 
         return ret
 

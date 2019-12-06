@@ -5,6 +5,6 @@ set -e
 rm -r build || true
 rm -r dist || true
 
-py3clean . || true
+py3clean .
 python3 setup.py clean --all
 python3 setup.py sdist bdist_wheel
