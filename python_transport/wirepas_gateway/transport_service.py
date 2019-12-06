@@ -17,6 +17,9 @@ import os
 from time import time, sleep
 from uuid import getnode
 from threading import Thread
+import subprocess
+import re
+from datetime import datetime, timedelta
 
 # modem gRPC modules
 import grpc
@@ -80,6 +83,160 @@ class PeriodicThread(Thread):
         self.running = False
 
 
+class SetRTCThread(Thread):
+    """
+    Thread that broadcast the setrtc command to the wirepas clients
+    """
+
+    MONITORING_NTP_PERIOD_S = 5
+    VALID_RTC_DELAY_S = 60
+
+    def __init__(self, logger, period, transport, ntp):
+        Thread.__init__(self)
+
+        self.logger = logger
+        # Daemonize thread to exit with full process
+        self.daemon = True
+        # How often to send message
+        self.period = period
+        # TransportService
+        self.transport = transport
+        # NTPMonitorThread
+        self.ntp = ntp
+
+        self.running = False
+
+    def run(self):
+        self.running = True
+
+        # Wait NTP Monitor to run the first time
+        sleep(2)
+
+        while self.running:
+            if self.ntp.isValid():
+                self.transport.send_setrtc()
+
+                # Wait for a full period
+                self.logger.info("SetRTC - wait %d s", self.period)
+                sleep(self.period)
+
+            else:
+                # Wait NTP sync
+                self.logger.info("SetRTC - wait NTP sync")
+                while self.running and not self.ntp.isValid():
+                    # Wait a bit before checking NTP state again
+                    sleep(SetRTCThread.MONITORING_NTP_PERIOD_S)
+
+                # Wait again to let wirepas network handle the sink cost change
+                self.logger.info("SetRTC - wait wirepas network update")
+                sleep(SetRTCThread.VALID_RTC_DELAY_S)
+
+
+    def stop(self):
+        """
+        Stop the thread
+        """
+        self.running = False
+
+
+class NTPMonitorThread(Thread):
+    """
+    Thread that monitor the state of the NTP client.
+    If available the BackendMonitor is called to update the sink cost if system time is out of sync.
+    """
+
+    MONITORING_RTC_PERIOD_S = 20
+
+    def __init__(self, logger, period, backendMonitor):
+        Thread.__init__(self)
+
+        self.logger = logger
+        # Daemonize thread to exit with full process
+        self.daemon = True
+        # Delay before NTP unsync status (hours)
+        if period > 0:
+            self.period = period
+        else:
+            self.period = 24
+            self.logger.warning("NTP Monitor period is not valid, use default settings 24H")
+
+        # BackendMonitor
+        self.backendMonitor = backendMonitor
+        if self.backendMonitor is None:
+            self.logger.warning("BackendMonitor is not available for sink cost updates")
+
+        # Set a deadline after boot
+        self.deadline = datetime.utcnow() - timedelta(hours = self.period)
+
+        self.valid = False
+        self.running = False
+
+    def run(self):
+        self.running = True
+        first_run = True
+
+        while self.running:
+            valid = False
+
+            # get NTP state - last valid sync
+            timedatectlCMD = subprocess.Popen(
+                ['/usr/bin/timedatectl', 'show-timesync', '--property=NTPMessage', '--value'],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT
+            )
+
+            TimestampRegex = re.compile(r'ReceiveTimestamp=(\S+) (\S+ \S+) UTC')
+            resultStdout, resultStderr = timedatectlCMD.communicate()
+
+            try:
+                date_str = TimestampRegex.search(resultStdout.decode('utf-8')).group(2)
+                date_obj = datetime.strptime(date_str, '%Y-%m-%d %H:%M:%S')
+
+                # Compute time duration to deadline
+                dealine_delay = date_obj - self.deadline
+                valid = (dealine_delay.total_seconds() > 0)
+
+                if valid or self.valid or first_run:
+                    self.logger.info("NTP last sync: %s (%s)", str(date_obj), "Valid" if valid else "Too old" )
+
+            except Exception:
+                if self.valid or first_run:
+                    self.logger.info("NTP last sync: Not available")
+
+            if self.backendMonitor is not None:
+                # update sink state if NTP state changes
+                if first_run:
+                    if not valid:
+                        self.backendMonitor.require_sink_cost_high()
+                elif self.valid != valid:
+                    if not valid:
+                        self.backendMonitor.require_sink_cost_high()
+                    else:
+                        self.backendMonitor.release_sink_cost_high()
+
+            # update state
+            self.valid = valid
+            first_run = False
+
+            if self.valid:
+                self.deadline = date_obj + timedelta(hours = self.period)
+                time_to_deadline = self.deadline - datetime.utcnow()
+
+                self.logger.info("NTPMonitor - wait %d s", time_to_deadline.total_seconds())
+                sleep(time_to_deadline.total_seconds() + 5) # add few seconds to avoid timing rounding issue
+            else:
+                # Wait a bit before checking NTP state again
+                sleep(NTPMonitorThread.MONITORING_RTC_PERIOD_S)
+
+    def stop(self):
+        """
+        Stop the thread
+        """
+        self.running = False
+
+    def isValid(self):
+        return self.valid
+
+
 class ConnectionToBackendMonitorThread(Thread):
 
     # Maximum cost to disable traffic
@@ -133,6 +290,17 @@ class ConnectionToBackendMonitorThread(Thread):
         self.max_buffered_packets = max_buffered_packets
         self.max_delay_without_publish = max_delay_without_publish
 
+        # External sink cost request
+        self.sink_cost_request = 0
+
+    def require_sink_cost_high(self):
+        self.sink_cost_request = self.sink_cost_request + 1
+        self.logger.info("External request for increasing sink cost (%d)", self.sink_cost_request)
+
+    def release_sink_cost_high(self):
+        self.sink_cost_request = self.sink_cost_request - 1
+        self.logger.info("External request for restoring sink cost (%d)", self.sink_cost_request)
+
     def _set_sinks_cost(self, cost):
         for sink in self.sink_manager.get_sinks():
             sink.cost = cost
@@ -177,7 +345,7 @@ class ConnectionToBackendMonitorThread(Thread):
         while self.running:
             if not self.disconnected:
                 # Check if a condition to declare "back hole" is met
-                if self._is_publish_delay_over() or self._is_buffer_threshold_reached():
+                if self._is_publish_delay_over() or self._is_buffer_threshold_reached() or self.sink_cost_request > 0:
                     self.logger.info("Increasing sink cost of all sinks")
                     self.logger.debug(
                         "Last publish: %s Queue Size %s",
@@ -188,7 +356,7 @@ class ConnectionToBackendMonitorThread(Thread):
                     self._set_sinks_cost_high()
                     self.disconnected = True
             else:
-                if self.mqtt_wrapper.publish_queue_size == 0:
+                if self.mqtt_wrapper.publish_queue_size == 0 and self.sink_cost_request <= 0:
                     # Network is back, put the connection back
                     self.logger.info(
                         "Connection is back, decreasing sink cost of all sinks"
@@ -330,6 +498,23 @@ class TransportService(BusClient):
 
         self.periodicThread = PeriodicThread(self.logger, self)
         self.periodicThread.start()
+
+        self.ntpMonitoringThread = NTPMonitorThread(
+            self.logger,
+            settings.ntp_sync_validity,
+            self.monitoring_thread
+        )
+        self.ntpMonitoringThread.start()
+
+        if settings.setrtc_broadcast_period > 0:
+            self.rtcThread = SetRTCThread(
+                self.logger,
+                settings.setrtc_broadcast_period,
+                self,
+                self.ntpMonitoringThread
+            )
+            self.rtcThread.start()
+
 
     def _on_mqtt_wrapper_termination_cb(self):
         """
@@ -754,7 +939,7 @@ class TransportService(BusClient):
             self.logger.info("request is " + req_name)
 
             if req_name == maersk_request_parser.MaerskGatewayRequestParser.REQUEST_RTC:
-                self._send_setrtc()
+                self.send_setrtc()
 
             self.mqtt_wrapper.publish("gw-response/exec_cmd/" + self.gw_id, response, qos=2)
 
@@ -774,7 +959,7 @@ class TransportService(BusClient):
             self.logger.error(str(e))
 
 
-    def _send_setrtc(self):
+    def send_setrtc(self):
         self.logger.info("Send setrtc broadcast")
 
         try:
@@ -949,6 +1134,7 @@ def main():
     parse.add_filtering_config()
     parse.add_buffering_settings()
     parse.add_deprecated_args()
+    parse.add_maersk_settings()
 
     settings = parse.settings()
 
