@@ -48,7 +48,7 @@ class MaerskGatewayRequestParser():
         
         # Check TTL
         if self.epoch_ms > request.header.time_to_live_epoch_ms:
-            raise MaerskParsingException("ttl expired")
+            raise MaerskParsingException("ttl expired - (gateway {} < request {})".format(self.epoch_ms, request.header.time_to_live_epoch_ms))
             
         # Parse request
         if gateway_req.HasField('gw_status_req'):
