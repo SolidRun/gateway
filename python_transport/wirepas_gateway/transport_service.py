@@ -14,7 +14,7 @@ sys.path.insert(0, cmd_subfolder)
 
 import logging
 import os
-from time import time
+from time import time, sleep
 from uuid import getnode
 from threading import Thread
 
@@ -43,6 +43,41 @@ from wirepas_gateway import __pkg_name__
 
 # This constant is the actual API level implemented by this transport module (cf WP-RM-128)
 IMPLEMENTED_API_VERSION = 1
+
+
+
+
+class PeriodicThread(Thread):
+    """
+    Thread that sends periodic messages to the cloud
+    """
+
+    PERIODIC_DELAY_S = 60*60
+
+    def __init__(self, logger, transport):
+        Thread.__init__(self)
+
+        self.logger = logger
+        # Daemonize thread to exit with full process
+        self.daemon = True
+        # TransportService
+        self.transport = transport
+
+        self.running = False
+
+    def run(self):
+        self.running = True
+
+        while self.running:
+            self.transport.on_periodic_request()
+            sleep(PeriodicThread.PERIODIC_DELAY_S)
+
+
+    def stop(self):
+        """
+        Stop the thread
+        """
+        self.running = False
 
 
 class TransportService(BusClient):
@@ -128,6 +163,9 @@ class TransportService(BusClient):
 
         self.logger.info("Gateway started with id: %s", self.gw_id)
 
+        self.periodicThread = PeriodicThread(self.logger, self)
+        self.periodicThread.start()
+
     def _on_mqtt_wrapper_termination_cb(self):
         """
         Callback used to be informed when the MQTT wrapper has exited
@@ -145,6 +183,7 @@ class TransportService(BusClient):
         topic = TopicGenerator.make_status_topic(self.gw_id)
 
         self.mqtt_wrapper.publish(topic, event_online.payload, qos=1, retain=True)
+
 
     def _on_connect(self):
         # Register for get gateway info
@@ -189,6 +228,7 @@ class TransportService(BusClient):
         self._set_status()
 
         self.logger.info("MQTT connected!")
+
 
     def on_data_received(
         self,
@@ -535,6 +575,18 @@ class TransportService(BusClient):
 
         try:
             response = maersk_request_parser.MaerskGatewayRequestParser(self.logger).parse(message.payload)
+            self.mqtt_wrapper.publish("gw-response/exec_cmd/" + self.gw_id, response, qos=2)
+
+        except Exception as e:
+            self.logger.error(str(e))
+
+    @deferred_thread
+    def on_periodic_request(self):
+        # pylint: disable=unused-argument
+        self.logger.info("Send periodic message")
+
+        try:
+            response = maersk_request_parser.MaerskGatewayRequestParser(self.logger).reply_gw_status_req()
             self.mqtt_wrapper.publish("gw-response/exec_cmd/" + self.gw_id, response, qos=2)
 
         except Exception as e:
