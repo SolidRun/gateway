@@ -26,6 +26,7 @@ import GPS_Service_pb2_grpc
 import maersk_request_parser
 
 import wirepas_messaging
+from wirepas_messaging.gateway.api.response import Response
 from wirepas_gateway.dbus.dbus_client import BusClient
 from wirepas_gateway.protocol.topic_helper import TopicGenerator, TopicParser
 from wirepas_gateway.protocol.mqtt_wrapper import MQTTWrapper
@@ -252,6 +253,11 @@ class TransportService(BusClient):
 
         self.logger.info("IMSI: %u", self.imsi)
 
+        # Update Response class
+        Response.gw_id = self.gw_id
+        Response.wirepas_version = self.wirepas_version
+        Response.firmware = self.firmware
+        Response.imsi = self.imsi
 
         self.mqtt_wrapper = MQTTWrapper(
             settings,
@@ -704,7 +710,7 @@ class TransportService(BusClient):
         self.logger.info("Gateway request received")
 
         try:
-            response = maersk_request_parser.MaerskGatewayRequestParser(self.gw_id, self.firmware, self.imsi, self.wirepas_version, self.logger).parse(message.payload)
+            response = maersk_request_parser.MaerskGatewayRequestParser(self.logger).parse(message.payload)
             self.mqtt_wrapper.publish("gw-response/exec_cmd/" + self.gw_id, response, qos=2)
 
         except Exception as e:
