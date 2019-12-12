@@ -109,9 +109,6 @@ class SetRTCThread(Thread):
     def run(self):
         self.running = True
 
-        # Wait NTP Monitor to run the first time
-        sleep(2)
-
         while self.running:
             if self.ntp.isValid():
                 self.transport.send_setrtc()
@@ -338,7 +335,13 @@ class ConnectionToBackendMonitorThread(Thread):
         """
 
         # Initialize already detected sinks
-        self._set_sinks_cost_low()
+        if self.sink_cost_request <= 0:
+            self.logger.info("Initialize sink cost to low")
+            self._set_sinks_cost_low()
+        else:
+            self.logger.info("Initialize sink cost to high")
+            self.disconnected = True
+            self._set_sinks_cost_high()
 
         self.running = True
 
@@ -494,7 +497,8 @@ class TransportService(BusClient):
                 settings.buffering_max_buffered_packets,
                 settings.buffering_max_delay_without_publish,
             )
-            self.monitoring_thread.start()
+            # deferred start due to NTP
+            # self.monitoring_thread.start()
 
         self.periodicThread = PeriodicThread(self.logger, self)
         self.periodicThread.start()
@@ -505,6 +509,12 @@ class TransportService(BusClient):
             self.monitoring_thread
         )
         self.ntpMonitoringThread.start()
+
+        # Wait NTP Monitor to run the first time
+        sleep(2)
+
+        if self.monitoring_thread is not None:
+            self.monitoring_thread.start()
 
         if settings.setrtc_broadcast_period > 0:
             self.rtcThread = SetRTCThread(
