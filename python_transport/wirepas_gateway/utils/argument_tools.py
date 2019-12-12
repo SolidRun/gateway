@@ -305,7 +305,7 @@ class ParserHelper:
         """ Parameters used to avoid black hole case """
         self.buffering.add_argument(
             "--buffering_max_buffered_packets",
-            default=0,
+            default=1000,
             action="store",
             type=int,
             help=(
@@ -316,7 +316,7 @@ class ParserHelper:
 
         self.buffering.add_argument(
             "--buffering_max_delay_without_publish",
-            default=0,
+            default=10,
             action="store",
             type=int,
             help=(
