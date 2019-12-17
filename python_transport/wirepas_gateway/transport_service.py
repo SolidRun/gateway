@@ -979,7 +979,7 @@ class TransportService(BusClient):
             for sink in self.sink_manager.get_sinks():
                 sink.send_data(
                     0xFFFFFFFF, # Broadcast
-                    101,        # src EP
+                    104,        # src EP
                     101,        # dst EP
                     0,          # QoS
                     0,          # Delay
