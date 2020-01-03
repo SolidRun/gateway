@@ -162,9 +162,6 @@ class NTPMonitorThread(Thread):
         if self.backendMonitor is None:
             self.logger.warning("BackendMonitor is not available for sink cost updates")
 
-        # Set a deadline after boot
-        self.deadline = datetime.utcnow() - timedelta(hours = self.period)
-
         self.valid = False
         self.running = False
 
@@ -189,7 +186,8 @@ class NTPMonitorThread(Thread):
                 date_obj = datetime.strptime(date_str, '%Y-%m-%d %H:%M:%S')
 
                 # Compute time duration to deadline
-                dealine_delay = date_obj - self.deadline
+                deadline = datetime.utcnow() - timedelta(hours = self.period)
+                dealine_delay = date_obj - deadline
                 valid = (dealine_delay.total_seconds() > 0)
 
                 if valid or self.valid or first_run:
@@ -215,8 +213,7 @@ class NTPMonitorThread(Thread):
             first_run = False
 
             if self.valid:
-                self.deadline = date_obj + timedelta(hours = self.period)
-                time_to_deadline = self.deadline - datetime.utcnow()
+                time_to_deadline = (date_obj + timedelta(hours = self.period)) - datetime.utcnow()
 
                 self.logger.info("NTPMonitor - wait %d s", time_to_deadline.total_seconds())
                 sleep(time_to_deadline.total_seconds() + 5) # add few seconds to avoid timing rounding issue
