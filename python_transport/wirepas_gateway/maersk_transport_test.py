@@ -84,8 +84,23 @@ class TransportService():
 
         # Maersk requests
         self.mqtt_wrapper.subscribe("gw-response/exec_cmd/" + self.gw_id, self._on_gw_response)
+        self.mqtt_wrapper.subscribe("gw-response/get_configs/" + self.gw_id, self._on_gw_response)
 
         try:
+            # send Data
+            dReq = wirepas_messaging.gateway.api.SendDataRequest(0xFFFFFFFF, 100, 100, 0, b'ELLO').payload
+            
+            message = wirepas_messaging.gateway.GenericMessage()
+            message.ParseFromString(dReq)
+
+            message.customer.customer_name = "Maersk"
+            message.customer.request.header.time_to_live_epoch_ms = int(time.time() * 1000) - 1000
+
+
+            self.mqtt_wrapper.publish("gw-request/send_data/" + self.gw_id + "/0", message.SerializeToString(), qos=2)
+            self.logger.info("data published!")
+        
+        
             # send Req
             message = wirepas_messaging.gateway.GenericMessage()
             message.customer.customer_name = "Maersk"
@@ -107,6 +122,18 @@ class TransportService():
 
             self.mqtt_wrapper.publish("gw-request/exec_cmd/" + self.gw_id, message.SerializeToString(), qos=2)
             self.logger.info("published!")
+            
+            # send Req
+            message = wirepas_messaging.gateway.GenericMessage()
+            message.customer.customer_name = "Maersk"
+            message.customer.request.header.time_to_live_epoch_ms = int(time.time() * 1000) + 1000
+            message.customer.request.gateway_req.header.req_id = 23
+            
+            message.wirepas.get_configs_req.header.req_id = 2
+
+            self.mqtt_wrapper.publish("gw-request/get_configs/" + self.gw_id, message.SerializeToString(), qos=2)
+            self.logger.info("get config!")
+            
 
         except Exception as e:
             self.logger.error(str(e))
@@ -168,6 +195,13 @@ class TransportService():
 
             elif gateway_resp.HasField('gw_setrtc_resp'):
                 self.logger.info(" Type is gw_setrtc_resp")
+
+            elif msg.wirepas.HasField('get_configs_resp'):
+                self.logger.info(" Type is get_configs")
+                self.logger.info(" req_id %d, maersk id %d",
+                    msg.wirepas.get_configs_resp.header.req_id,
+                    customer.response.gateway_resp.header.req_id
+                )
 
             else:
                raise MaerskParsingException("response not implemented")
