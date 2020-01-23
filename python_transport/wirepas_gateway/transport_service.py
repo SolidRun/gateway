@@ -775,6 +775,7 @@ class TransportService(BusClient):
         response = wirepas_messaging.gateway.api.GetConfigsResponse(
             request.req_id, self.gw_id, GatewayResultCode.GW_RES_OK, configs
         )
+        response.maersk_req_id = request.maersk_req_id
         topic = TopicGenerator.make_get_configs_response_topic(self.gw_id)
 
         self.mqtt_wrapper.publish(topic, response.payload, qos=2)
@@ -831,6 +832,7 @@ class TransportService(BusClient):
         response = wirepas_messaging.gateway.api.SetConfigResponse(
             request.req_id, self.gw_id, res, request.sink_id, new_config
         )
+        response.maersk_req_id = request.maersk_req_id
         topic = TopicGenerator.make_set_config_response_topic(
             self.gw_id, request.sink_id
         )
