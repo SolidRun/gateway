@@ -714,7 +714,8 @@ class TransportService(BusClient):
         self.logger.info("Request to send data")
         try:
             request = wirepas_messaging.gateway.api.SendDataRequest.from_payload(
-                message.payload
+                message.payload,
+                self.logger
             )
         except GatewayAPIParsingException as e:
             self.logger.error(str(e))
