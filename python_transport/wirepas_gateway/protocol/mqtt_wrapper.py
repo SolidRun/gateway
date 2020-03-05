@@ -268,7 +268,11 @@ class MQTTWrapper(Thread):
 
     @property
     def last_published_packet_s(self):
-        delta = datetime.now() - self._timestamp_last_publish
+        if len(self._unpublished_mid_set) != 0:
+            delta = datetime.now() - self._timestamp_last_publish
+        else:
+            delta = datetime.now() - self._publish_queue._timestamp_last_publish
+
         return delta.total_seconds()
 
 
@@ -283,6 +287,7 @@ class SelectableQueue(queue.Queue):
         self._putsocket, self._getsocket = socket.socketpair()
         self._lock = Lock()
         self._size = 0
+        self._timestamp_last_publish = 0
 
     def fileno(self):
         """
@@ -315,4 +320,6 @@ class SelectableQueue(queue.Queue):
             if self._size == 0:
                 # Consume 1 byte from socket
                 self._getsocket.recv(1)
+
+            self._timestamp_last_publish = datetime.now()
             return item
