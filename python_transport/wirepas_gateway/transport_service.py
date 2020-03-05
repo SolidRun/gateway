@@ -2,13 +2,35 @@
 #
 # See file LICENSE for full license details.
 #
+#  This is a modified version for Maersk application
+#  Modifications SolidRun / Sterwen Technology - 05/12/2019
+# added to version 1.0 of Maersk application
+#
+#  adjust import
+# update path to include local directory for grpc to Modem_GPS_Service
+import os, sys, inspect
+cmd_subfolder = os.path.realpath(os.path.abspath(os.path.join(os.path.split(inspect.getfile( inspect.currentframe() ))[0], ".")))
+sys.path.insert(0, cmd_subfolder)
+
 import logging
 import os
 from time import time, sleep
 from uuid import getnode
 from threading import Thread
+import subprocess
+import re
+from datetime import datetime, timedelta
+
+# modem gRPC modules
+import grpc
+from GPS_Service_pb2 import *
+import GPS_Service_pb2_grpc
+
+import maersk_request_parser
+import cbor2
 
 import wirepas_messaging
+from wirepas_messaging.gateway.api.response import Response
 from wirepas_gateway.dbus.dbus_client import BusClient
 from wirepas_gateway.protocol.topic_helper import TopicGenerator, TopicParser
 from wirepas_gateway.protocol.mqtt_wrapper import MQTTWrapper
@@ -25,6 +47,188 @@ from wirepas_gateway import __pkg_name__
 
 # This constant is the actual API level implemented by this transport module (cf WP-RM-128)
 IMPLEMENTED_API_VERSION = 1
+
+
+class PeriodicThread(Thread):
+    """
+    Thread that sends periodic messages to the cloud
+    """
+
+    PERIODIC_DELAY_S = 60*60
+
+    def __init__(self, logger, transport):
+        Thread.__init__(self)
+
+        self.logger = logger
+        # Daemonize thread to exit with full process
+        self.daemon = True
+
+        # TransportService
+        self.transport = transport
+
+        self.running = False
+
+    def run(self):
+        self.running = True
+
+        while self.running:
+            self.transport.on_periodic_request()
+            sleep(PeriodicThread.PERIODIC_DELAY_S)
+
+
+    def stop(self):
+        """
+        Stop the thread
+        """
+        self.running = False
+
+
+class SetRTCThread(Thread):
+    """
+    Thread that broadcast the setrtc command to the wirepas clients
+    """
+
+    MONITORING_NTP_PERIOD_S = 5
+    VALID_RTC_DELAY_S = 60
+
+    def __init__(self, logger, period, transport, ntp):
+        Thread.__init__(self)
+
+        self.logger = logger
+        # Daemonize thread to exit with full process
+        self.daemon = True
+        # How often to send message
+        self.period = period
+        # TransportService
+        self.transport = transport
+        # NTPMonitorThread
+        self.ntp = ntp
+
+        self.running = False
+
+    def run(self):
+        self.running = True
+
+        while self.running:
+            if self.ntp.isValid():
+                self.transport.send_setrtc()
+
+                # Wait for a full period
+                self.logger.info("SetRTC - wait %d s", self.period)
+                sleep(self.period)
+
+            else:
+                # Wait NTP sync
+                self.logger.info("SetRTC - wait NTP sync")
+                while self.running and not self.ntp.isValid():
+                    # Wait a bit before checking NTP state again
+                    sleep(SetRTCThread.MONITORING_NTP_PERIOD_S)
+
+                # Wait again to let wirepas network handle the sink cost change
+                self.logger.info("SetRTC - wait wirepas network update")
+                sleep(SetRTCThread.VALID_RTC_DELAY_S)
+
+
+    def stop(self):
+        """
+        Stop the thread
+        """
+        self.running = False
+
+
+class NTPMonitorThread(Thread):
+    """
+    Thread that monitor the state of the NTP client.
+    If available the BackendMonitor is called to update the sink cost if system time is out of sync.
+    """
+
+    MONITORING_RTC_PERIOD_S = 20
+
+    def __init__(self, logger, period, backendMonitor):
+        Thread.__init__(self)
+
+        self.logger = logger
+        # Daemonize thread to exit with full process
+        self.daemon = True
+        # Delay before NTP unsync status (hours)
+        if period > 0:
+            self.period = period
+        else:
+            self.period = 24
+            self.logger.warning("NTP Monitor period is not valid, use default settings 24H")
+
+        # BackendMonitor
+        self.backendMonitor = backendMonitor
+        if self.backendMonitor is None:
+            self.logger.warning("BackendMonitor is not available for sink cost updates")
+
+        self.valid = False
+        self.running = False
+
+    def run(self):
+        self.running = True
+        first_run = True
+
+        while self.running:
+            valid = False
+
+            # get NTP state - last valid sync
+            timedatectlCMD = subprocess.Popen(
+                ['/usr/bin/timedatectl', 'show-timesync', '--property=NTPMessage', '--value'],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT
+            )
+
+            TimestampRegex = re.compile(r'ReceiveTimestamp=(\S+) (\S+ \S+) UTC')
+            resultStdout, resultStderr = timedatectlCMD.communicate()
+
+            try:
+                date_str = TimestampRegex.search(resultStdout.decode('utf-8')).group(2)
+                date_obj = datetime.strptime(date_str, '%Y-%m-%d %H:%M:%S')
+
+                # Compute time duration to deadline
+                deadline = datetime.utcnow() - timedelta(hours = self.period)
+                dealine_delay = date_obj - deadline
+                valid = (dealine_delay.total_seconds() > 0)
+
+                if valid or self.valid or first_run:
+                    self.logger.info("NTP last sync: %s (%s)", str(date_obj), "Valid" if valid else "Too old" )
+
+            except Exception:
+                if self.valid or first_run:
+                    self.logger.info("NTP last sync: Not available")
+
+            if self.backendMonitor is not None:
+                # update sink state if NTP state changes
+                if first_run:
+                    if not valid:
+                        self.backendMonitor.require_sink_cost_high()
+                elif self.valid != valid:
+                    if not valid:
+                        self.backendMonitor.require_sink_cost_high()
+                    else:
+                        self.backendMonitor.release_sink_cost_high()
+
+            # update state
+            self.valid = valid
+            first_run = False
+
+            if self.valid:
+                time_to_deadline = (date_obj + timedelta(hours = self.period)) - datetime.utcnow()
+
+                self.logger.info("NTPMonitor - wait %d s", time_to_deadline.total_seconds())
+                sleep(time_to_deadline.total_seconds() + 5) # add few seconds to avoid timing rounding issue
+            else:
+                # Wait a bit before checking NTP state again
+                sleep(NTPMonitorThread.MONITORING_RTC_PERIOD_S)
+
+    def stop(self):
+        """
+        Stop the thread
+        """
+        self.running = False
+
+    def isValid(self):
+        return self.valid
 
 
 class ConnectionToBackendMonitorThread(Thread):
@@ -80,6 +284,17 @@ class ConnectionToBackendMonitorThread(Thread):
         self.max_buffered_packets = max_buffered_packets
         self.max_delay_without_publish = max_delay_without_publish
 
+        # External sink cost request
+        self.sink_cost_request = 0
+
+    def require_sink_cost_high(self):
+        self.sink_cost_request = self.sink_cost_request + 1
+        self.logger.info("External request for increasing sink cost (%d)", self.sink_cost_request)
+
+    def release_sink_cost_high(self):
+        self.sink_cost_request = self.sink_cost_request - 1
+        self.logger.info("External request for restoring sink cost (%d)", self.sink_cost_request)
+
     def _set_sinks_cost(self, cost):
         for sink in self.sink_manager.get_sinks():
             sink.cost = cost
@@ -117,14 +332,20 @@ class ConnectionToBackendMonitorThread(Thread):
         """
 
         # Initialize already detected sinks
-        self._set_sinks_cost_low()
+        if self.sink_cost_request <= 0:
+            self.logger.info("Initialize sink cost to low")
+            self._set_sinks_cost_low()
+        else:
+            self.logger.info("Initialize sink cost to high")
+            self.disconnected = True
+            self._set_sinks_cost_high()
 
         self.running = True
 
         while self.running:
             if not self.disconnected:
                 # Check if a condition to declare "back hole" is met
-                if self._is_publish_delay_over() or self._is_buffer_threshold_reached():
+                if self._is_publish_delay_over() or self._is_buffer_threshold_reached() or self.sink_cost_request > 0:
                     self.logger.info("Increasing sink cost of all sinks")
                     self.logger.debug(
                         "Last publish: %s Queue Size %s",
@@ -135,7 +356,7 @@ class ConnectionToBackendMonitorThread(Thread):
                     self._set_sinks_cost_high()
                     self.disconnected = True
             else:
-                if self.mqtt_wrapper.publish_queue_size == 0:
+                if self.mqtt_wrapper.publish_queue_size == 0 and self.sink_cost_request <= 0:
                     # Network is back, put the connection back
                     self.logger.info(
                         "Connection is back, decreasing sink cost of all sinks"
@@ -204,6 +425,48 @@ class TransportService(BusClient):
             self.gw_id, GatewayState.OFFLINE
         ).payload
 
+
+        # Get sink firmware version
+        sink = self.sink_manager.get_sinks()[0]
+        config = sink.read_config()
+        self.wirepas_version = "{}.{}.{}.{}".format(*config["firmware_version"])
+        self.logger.info("Wirepas firmware: %s", self.wirepas_version)
+
+        # Get firmware info
+        with open("/etc/mender/artifact_info", 'r') as info:
+            self.firmware = info.readline()[14:].rstrip('\r\n') # remove "artifact_name="
+
+        self.logger.info("Solidsense firmware: %s", self.firmware)
+
+        # get IMSI with gRPC
+        try:
+            channel = grpc.insecure_channel("0.0.0.0:20231")
+            stub = GPS_Service_pb2_grpc.GPS_ServiceStub(channel)
+            req = ModemCmd(command="status")
+            resp = stub.modemCommand(req)
+
+            if resp.response == 'OK' and resp.status.SIM_status == 'READY':
+                # correction of issue 282
+                self.imsi = int(resp.status.IMSI)
+            else:
+                self.imsi = 0
+                if resp.response == 'OK':
+                    self.logger.warning("No SIM available!")
+                else:
+                    self.logger.warning("No Modem service!")
+
+        except Exception:
+            self.imsi = 0
+            self.logger.error("Modem service failure!")
+
+        self.logger.info("IMSI: %u", self.imsi)
+
+        # Update Response class
+        Response.gw_id = self.gw_id
+        Response.wirepas_version = self.wirepas_version
+        Response.firmware = self.firmware
+        Response.imsi = self.imsi
+
         self.mqtt_wrapper = MQTTWrapper(
             settings,
             self.logger,
@@ -236,7 +499,34 @@ class TransportService(BusClient):
                 settings.buffering_max_buffered_packets,
                 settings.buffering_max_delay_without_publish,
             )
+            # deferred start due to NTP
+            # self.monitoring_thread.start()
+
+        self.periodicThread = PeriodicThread(self.logger, self)
+        self.periodicThread.start()
+
+        self.ntpMonitoringThread = NTPMonitorThread(
+            self.logger,
+            settings.ntp_sync_validity,
+            self.monitoring_thread
+        )
+        self.ntpMonitoringThread.start()
+
+        # Wait NTP Monitor to run the first time
+        sleep(2)
+
+        if self.monitoring_thread is not None:
             self.monitoring_thread.start()
+
+        if settings.setrtc_broadcast_period > 0:
+            self.rtcThread = SetRTCThread(
+                self.logger,
+                settings.setrtc_broadcast_period,
+                self,
+                self.ntpMonitoringThread
+            )
+            self.rtcThread.start()
+
 
     def _on_mqtt_wrapper_termination_cb(self):
         """
@@ -255,6 +545,7 @@ class TransportService(BusClient):
         topic = TopicGenerator.make_status_topic(self.gw_id)
 
         self.mqtt_wrapper.publish(topic, event_online.payload, qos=1, retain=True)
+
 
     def _on_connect(self):
         # Register for get gateway info
@@ -291,9 +582,15 @@ class TransportService(BusClient):
             topic, self._on_otap_process_scratchpad_request_received
         )
 
+        # Maersk requests
+        self.mqtt_wrapper.subscribe(
+            "gw-request/exec_cmd/" + self.gw_id, self._on_gw_request
+        )
+
         self._set_status()
 
         self.logger.info("MQTT connected!")
+
 
     def on_data_received(
         self,
@@ -424,7 +721,8 @@ class TransportService(BusClient):
         # pylint: disable=unused-argument
         try:
             request = wirepas_messaging.gateway.api.SendDataRequest.from_payload(
-                message.payload
+                message.payload,
+                self.logger
             )
         except GatewayAPIParsingException as e:
             self.logger.error(str(e))
@@ -646,6 +944,56 @@ class TransportService(BusClient):
 
         self.mqtt_wrapper.publish(topic, response.payload, qos=2)
 
+    @deferred_thread
+    def _on_gw_request(self, client, userdata, message):
+        # pylint: disable=unused-argument
+        self.logger.info("Gateway request received")
+
+        try:
+            req_name, response = maersk_request_parser.MaerskGatewayRequestParser(self.logger).parse(message.payload)
+            self.logger.info("request is " + req_name)
+
+            if req_name == maersk_request_parser.MaerskGatewayRequestParser.REQUEST_RTC:
+                self.send_setrtc()
+
+            self.mqtt_wrapper.publish("gw-response/exec_cmd/" + self.gw_id, response, qos=2)
+
+        except Exception as e:
+            self.logger.error(str(e))
+
+    @deferred_thread
+    def on_periodic_request(self):
+        # pylint: disable=unused-argument
+        self.logger.info("Send periodic message")
+
+        try:
+            response = maersk_request_parser.MaerskGatewayRequestParser(self.logger).reply_gw_status_req()
+            self.mqtt_wrapper.publish("gw-response/exec_cmd/" + self.gw_id, response, qos=2)
+
+        except Exception as e:
+            self.logger.error(str(e))
+
+
+    def send_setrtc(self):
+        self.logger.info("Send setrtc broadcast")
+
+        try:
+            cbor_obj = cbor2.CBORTag(268, {0: 20, 3: {0: {1: {0: 0}}, 1: {5: {0: int(time())}}}})
+            cbor_payload = cbor2.dumps(cbor_obj)
+
+            for sink in self.sink_manager.get_sinks():
+                sink.send_data(
+                    0xFFFFFFFF, # Broadcast
+                    104,        # src EP
+                    101,        # dst EP
+                    0,          # QoS
+                    0,          # Delay
+                    cbor_payload
+                )
+
+        except Exception as e:
+            self.logger.error(str(e))
+
 
 def parse_setting_list(list_setting):
     """ This function parse ep list specified from setting file or cmd line
@@ -801,6 +1149,7 @@ def main():
     parse.add_filtering_config()
     parse.add_buffering_settings()
     parse.add_deprecated_args()
+    parse.add_maersk_settings()
 
     settings = parse.settings()
 

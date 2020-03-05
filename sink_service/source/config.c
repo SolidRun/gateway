@@ -651,6 +651,12 @@ int Config_Init(sd_bus * bus, char * object, char * interface)
         return r;
     }
 
+	/* Service is ready to set a default configuration */
+	LOGI("Force sink cost to 254\n");
+	if (WPC_set_sink_cost(254) != APP_RES_OK) {
+		LOGE("Impossible to force sink cost\n");
+	}
+
     return 0;
 }
 
