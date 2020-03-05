@@ -439,20 +439,25 @@ class TransportService(BusClient):
         self.logger.info("Solidsense firmware: %s", self.firmware)
 
         # get IMSI with gRPC
-        channel = grpc.insecure_channel("0.0.0.0:20231")
-        stub = GPS_Service_pb2_grpc.GPS_ServiceStub(channel)
-        req = ModemCmd(command="status")
-        resp = stub.modemCommand(req)
+        try:
+            channel = grpc.insecure_channel("0.0.0.0:20231")
+            stub = GPS_Service_pb2_grpc.GPS_ServiceStub(channel)
+            req = ModemCmd(command="status")
+            resp = stub.modemCommand(req)
 
-        if resp.response == 'OK' and resp.status.SIM_status == 'READY':
-            # correction of issue 282
-            self.imsi = int(resp.status.IMSI)
-        else:
-            self.imsi = 0
-            if resp.response == 'OK':
-                self.logger.warning("No SIM available!")
+            if resp.response == 'OK' and resp.status.SIM_status == 'READY':
+                # correction of issue 282
+                self.imsi = int(resp.status.IMSI)
             else:
-                self.logger.warning("No Modem service!")
+                self.imsi = 0
+                if resp.response == 'OK':
+                    self.logger.warning("No SIM available!")
+                else:
+                    self.logger.warning("No Modem service!")
+
+        except Exception:
+            self.imsi = 0
+            self.logger.error("Modem service failure!")
 
         self.logger.info("IMSI: %u", self.imsi)
 
