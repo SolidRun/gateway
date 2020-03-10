@@ -83,6 +83,59 @@ class PeriodicThread(Thread):
         self.running = False
 
 
+class NetMonitoringThread(Thread):
+    """
+    Thread that prints periodic network status messages
+    """
+
+    def __init__(self, logger, transport, backendMonitor, mqtt_wrapper, period):
+        Thread.__init__(self)
+
+        self.logger = logger
+        self.period = period
+        # Daemonize thread to exit with full process
+        self.daemon = True
+
+        # Other Objects
+        self.transport = transport
+        self.backendMonitor = backendMonitor
+        self.mqtt_wrapper = mqtt_wrapper
+
+        self.running = False
+
+    def run(self):
+        self.running = True
+
+        while self.running:
+            self.logger.info("Net-State: MQTT %s, MQTT messages sent %u, messages received %u",
+                             "CONNECTED" if self.mqtt_wrapper._client.socket() else "DISCONNECTED",
+                             self.mqtt_wrapper.published_total,
+                             self.mqtt_wrapper.suscribed_total)
+
+            if self.backendMonitor:
+                self.logger.info("           MQTT buffers %u (%u max), publish delay %u sec (%u max), sinks cost %s",
+                                 self.mqtt_wrapper.publish_queue_size,
+                                 self.backendMonitor.max_buffered_packets,
+                                 self.mqtt_wrapper.last_published_packet_s if self.mqtt_wrapper.publish_queue_size != 0 else 0,
+                                 self.backendMonitor.max_delay_without_publish,
+                                "HIGH" if self.backendMonitor.disconnected else "LOW")
+            else:
+                self.logger.info("           MQTT buffers %u, publish delay %u sec",
+                                 self.mqtt_wrapper.publish_queue_size,
+                                 self.mqtt_wrapper.last_published_packet_s if self.mqtt_wrapper.publish_queue_size != 0 else 0)
+
+            for id, data in self.transport.sink_stats.items():
+                self.logger.info("           Sink [%s]  messages received %u, last message %u s ago", id, data[0], 0 if data[0] == 0 else (int(time()) - data[1]))
+
+            sleep(self.period)
+
+    def stop(self):
+        """
+        Stop the thread
+        """
+        self.running = False
+
+
 class SetRTCThread(Thread):
     """
     Thread that broadcast the setrtc command to the wirepas clients
@@ -425,6 +478,9 @@ class TransportService(BusClient):
             self.gw_id, GatewayState.OFFLINE
         ).payload
 
+        self.sink_stats = {}
+        for sink in self.sink_manager.get_sinks():
+            self.sink_stats[sink.sink_id] = [0, 0]
 
         # Get sink firmware version
         sink = self.sink_manager.get_sinks()[0]
@@ -526,6 +582,10 @@ class TransportService(BusClient):
                 self.ntpMonitoringThread
             )
             self.rtcThread.start()
+
+        if settings.buffering_monitor_period != 0 :
+            self.net_monitoring_thread = NetMonitoringThread(self.logger, self, self.monitoring_thread, self.mqtt_wrapper, settings.buffering_monitor_period)
+            self.net_monitoring_thread.start()
 
 
     def _on_mqtt_wrapper_termination_cb(self):
@@ -648,6 +708,13 @@ class TransportService(BusClient):
         # unique id in event header can be used for duplicate filtering in
         # backends
         self.mqtt_wrapper.publish(topic, event.payload, qos=1)
+
+        # update sink stats
+        if self.sink_stats[sink_id] is None:
+            self.sink_stats[sink_id] = [0, 0] # number of messages, timestamp of last message
+        sink_data = self.sink_stats[sink_id]
+        sink_data[0] = sink_data[0] + 1
+        sink_data[1] = int(time())
 
     def on_stack_started(self, name):
         sink = self.sink_manager.get_sink(name)
