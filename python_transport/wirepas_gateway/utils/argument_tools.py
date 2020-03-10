@@ -383,6 +383,16 @@ class ParserHelper:
             ),
         )
 
+        self.buffering.add_argument(
+            "--buffering_monitor_period",
+            default=os.environ.get("WM_GW_BUFFERING_MONITOR_PERIOD", 0),
+            action="store",
+            type=self.str2int,
+            help=(
+                "Delay in seconds between two logs of the network/buffering state (0 will disable feature)"
+            ),
+        )
+
     @staticmethod
     def _deprecated_message(new_arg_name, deprecated_from="2.x"):
         """ Alerts the user that an argument will be deprecated within the
