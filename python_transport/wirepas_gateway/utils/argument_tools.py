@@ -12,6 +12,7 @@
 import argparse
 import sys
 import yaml
+import os
 
 from .serialization_tools import serialize
 
@@ -344,7 +345,7 @@ class ParserHelper:
             "--buffering_monitor_period",
             default=os.environ.get("WM_GW_BUFFERING_MONITOR_PERIOD", 0),
             action="store",
-            type=self.str2int,
+            type=int,
             help=(
                 "Delay in seconds between two logs of the network/buffering state (0 will disable feature)"
             ),
