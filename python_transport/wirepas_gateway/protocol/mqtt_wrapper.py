@@ -78,9 +78,12 @@ class MQTTWrapper(Thread):
                 keepalive=MQTTWrapper.KEEP_ALIVE_S,
             )
         except (socket.gaierror, ValueError) as e:
-            self.logger.error("Error on MQTT address %s:%d => %s" % (settings.mqtt_hostname, settings.mqtt_port, str(e)))
+            self.logger.error(
+                "Error on MQTT address %s:%d => %s"
+                % (settings.mqtt_hostname, settings.mqtt_port, str(e))
+            )
             exit(-1)
-        except ConnectionRefusedError as e:
+        except ConnectionRefusedError:
             self.logger.error("Connection Refused by MQTT broker")
             exit(-1)
 
@@ -94,6 +97,7 @@ class MQTTWrapper(Thread):
         # Thread is not started yes
         self.running = False
         self.connected = False
+        self.first_connection_done = False
 
     def _on_connect(self, client, userdata, flags, rc):
         # pylint: disable=unused-argument
@@ -102,13 +106,19 @@ class MQTTWrapper(Thread):
             self.running = False
             return
 
+        self.first_connection_done = True
         self.connected = True
         if self.on_connect_cb is not None:
             self.on_connect_cb()
 
-    def _on_disconnect(self, userdata,rc):
+    def _on_disconnect(self, userdata, rc):
         if rc != 0:
-            self.logger.error("MQTT unexpected disconnection (network or broker originated)")
+            self.logger.error(
+                "MQTT unexpected disconnection (network or broker originated):"
+                "%s (%s)",
+                connack_string(rc),
+                rc,
+            )
             self.connected = False
 
     def _on_publish(self, client, userdata, mid):
@@ -168,7 +178,8 @@ class MQTTWrapper(Thread):
 
         if self.connected:
             self.logger.error("MQTT Inner loop, unexpected disconnection")
-        else:
+        elif not self.first_connection_done:
+            # It's better to avoid retrying if the first connection was not successful
             self.logger.error("Impossible to connect - authentication failure ?")
             return None
 
