@@ -67,6 +67,7 @@ class MQTTWrapper(Thread):
         self._client.username_pw_set(settings.mqtt_username, settings.mqtt_password)
         self._client.on_connect = self._on_connect
         self._client.on_publish = self._on_publish
+        self._client.on_disconnect = self._on_disconnect
 
         if last_will_topic is not None and last_will_data is not None:
             self._set_last_will(last_will_topic, last_will_data)
@@ -78,7 +79,10 @@ class MQTTWrapper(Thread):
                 keepalive=MQTTWrapper.KEEP_ALIVE_S,
             )
         except (socket.gaierror, ValueError) as e:
-            self.logger.error("Cannot connect to mqtt %s", e)
+            self.logger.error("Error on MQTT address %s:%d => %s" % (settings.mqtt_hostname, settings.mqtt_port, str(e)))
+            exit(-1)
+        except ConnectionRefusedError as e:
+            self.logger.error("Connection Refused by MQTT broker")
             exit(-1)
 
         self.timeout = settings.mqtt_reconnect_delay
@@ -102,6 +106,11 @@ class MQTTWrapper(Thread):
         self.connected = True
         if self.on_connect_cb is not None:
             self.on_connect_cb()
+
+    def _on_disconnect(self, userdata,rc):
+        if rc != 0:
+            self.logger.error("MQTT unexpected disconnection (network or broker originated)")
+            self.connected = False
 
     def _on_publish(self, client, userdata, mid):
         self._unpublished_mid_set.remove(mid)
@@ -158,19 +167,20 @@ class MQTTWrapper(Thread):
         if sock is not None:
             return sock
 
-        self.logger.error("MQTT, unexpected disconnection")
-
-        if not self.connected:
+        if self.connected:
+            self.logger.error("MQTT Inner loop, unexpected disconnection")
+        else:
             self.logger.error("Impossible to connect - authentication failure ?")
             return None
 
         # Socket is not opened anymore, try to reconnect for timeout if set
         loop_forever = self.timeout == 0
         delay = 0
-
+        self.logger.info("Starting reconnect loop with timeout %d" % self.timeout)
         # Loop forever or until timeout is over
         while loop_forever or (delay <= self.timeout):
             try:
+                self.logger.debug("MQTT reconnect attempt delay=%d" % delay)
                 ret = self._client.reconnect()
                 if ret == mqtt.MQTT_ERR_SUCCESS:
                     break
@@ -190,6 +200,8 @@ class MQTTWrapper(Thread):
         if self._client.socket() is None:
             self.logger.error("Cannot get socket after reconnect")
             return None
+        else:
+            self.logger.info("Successfully acquired socket after reconnect")
 
         # Set options to new reopened socket
         self._client.socket().setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 2048)
@@ -201,8 +213,11 @@ class MQTTWrapper(Thread):
 
     def run(self):
         self.running = True
+
         while self.running:
+
             try:
+                # check if we are connected
                 # Get client socket to select on it
                 # This function manage the reconnect
                 sock = self._get_socket()
@@ -217,7 +232,7 @@ class MQTTWrapper(Thread):
                 self.logger.error("Timeout in connection, force a reconnect")
                 self._client.reconnect()
             except Exception:
-                # If an exception is not catched before this point
+                # If an exception is not caught before this point
                 # All the transport module must be stopped in order to be fully
                 # restarted by the managing agent
                 self.logger.exception("Unexpected exception in MQTT wrapper Thread")
@@ -227,6 +242,7 @@ class MQTTWrapper(Thread):
             # As this thread is daemonized, inform the parent that this
             # thread has exited
             self.on_termination_cb()
+            exit(2)
 
     def _publish_from_wrapper_thread(self, topic, payload, qos, retain):
         """Internal method to publish on Mqtt. This method is only called from
