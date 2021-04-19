@@ -6,7 +6,7 @@ import logging
 from threading import Thread
 from pydbus import SystemBus
 import dbusCExtension
-from gi.repository import GLib
+from gi.repository import GLib, GObject
 from .sink_manager import SinkManager
 
 
@@ -162,11 +162,18 @@ class BusClient:
 
         self.on_stop_client()
 
+
     def stop_dbus_client(self):
         """
         Explicitly stop the dbus client
         """
-        self.loop.quit()
+        def stop():
+            self.loop.quit()
+            return False
+
+        # Use deffered execution to avoid start/stop races
+        GObject.timeout_add(0, stop)
+
 
     # Method should be overwritten by child class
     def on_data_received(
