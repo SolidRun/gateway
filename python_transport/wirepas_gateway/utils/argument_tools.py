@@ -488,6 +488,14 @@ class ParserHelper:
             help=("Version of the gateway."),
         )
 
+        self.gateway.add_argument(
+            "--led",
+            action="store",
+            type=self.str2int,
+            default=0,
+            help="Led id (0 means disable)",
+        )
+
     def add_filtering_config(self):
         self.filtering.add_argument(
             "-iepf",

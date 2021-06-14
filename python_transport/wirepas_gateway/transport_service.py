@@ -4,6 +4,7 @@
 #
 import logging
 import os
+import signal, sys
 from time import time, sleep
 from uuid import getnode
 from threading import Thread
@@ -19,6 +20,8 @@ from wirepas_messaging.gateway.api import (
     GatewayState,
     GatewayAPIParsingException,
 )
+
+from wirepas_gateway.utils.solidsense_led import SolidSenseLed, BaseLed
 
 from wirepas_gateway import __version__ as transport_version
 from wirepas_gateway import __pkg_name__
@@ -178,7 +181,7 @@ class TransportService(BusClient):
     # Period in s to check for black hole issue
     MONITORING_BUFFERING_PERIOD_S = 1
 
-    def __init__(self, settings, logger=None, **kwargs):
+    def __init__(self, settings, logger=None, led=None, **kwargs):
         self.logger = logger or logging.getLogger(__name__)
         self.logger.info("Version is: %s", transport_version)
 
@@ -207,6 +210,7 @@ class TransportService(BusClient):
             self._on_connect,
             last_will_topic,
             last_will_message,
+            led,
         )
 
         self.mqtt_wrapper.start()
@@ -825,7 +829,16 @@ def main():
 
     _check_parameters(settings, logger)
 
-    TransportService(settings=settings, logger=logger).run()
+    # Deals with led here to help future merge with upstream
+    led = SolidSenseLed.ledref(settings.led) if settings.led != 0 else BaseLed()
+
+    def _sigterm_handler(self, *args):
+        led.off()
+        sys.exit(0)
+    signal.signal(signal.SIGTERM, _sigterm_handler)
+
+    TransportService(settings=settings, logger=logger, led=led).run()
+    led.off()
 
 
 if __name__ == "__main__":
