@@ -21,6 +21,7 @@ from wirepas_messaging.gateway.api import (
     GatewayAPIParsingException,
 )
 
+from wirepas_gateway.plugin_module import PluginManager
 from wirepas_gateway.utils.solidsense_led import SolidSenseLed, BaseLed
 
 from wirepas_gateway import __version__ as transport_version
@@ -217,6 +218,12 @@ class TransportService(BusClient):
 
         self.logger.info("Gateway started with id: %s", self.gw_id)
 
+        if settings.plugin_json:
+            self.plugin_manager = PluginManager(self.logger, self.sink_manager, self.mqtt_wrapper, settings)
+            self.plugin_manager.start()
+        else:
+            self.plugin_manager = None
+
         self.monitoring_thread = None
         self.minimum_sink_cost = settings.buffering_minimal_sink_cost
 
@@ -291,6 +298,9 @@ class TransportService(BusClient):
             topic, self._on_otap_process_scratchpad_request_received
         )
 
+        if self.plugin_manager is not None:
+            self.plugin_manager.on_connect_hook()
+
         self._set_status()
 
         self.logger.info("MQTT connected!")
@@ -308,6 +318,20 @@ class TransportService(BusClient):
         hop_count,
         data,
     ):
+        # Plugin hook
+        if self.plugin_manager is not None:
+            self.plugin_manager.on_data_received_hook(
+                sink_id,
+                timestamp,
+                src,
+                dst,
+                src_ep,
+                dst_ep,
+                travel_time,
+                qos,
+                hop_count,
+                data
+            )
 
         if self.whitened_ep_filter is not None and dst_ep in self.whitened_ep_filter:
             # Only publish payload size but not the payload
@@ -801,6 +825,7 @@ def main():
     parse.add_filtering_config()
     parse.add_buffering_settings()
     parse.add_deprecated_args()
+    parse.add_plugin_config()
 
     settings = parse.settings()
 

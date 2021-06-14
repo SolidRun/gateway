@@ -516,6 +516,17 @@ class ParserHelper:
             ),
         )
 
+    def add_plugin_config(self):
+        self.plugin.add_argument(
+            "--plugin_json",
+            default=False,
+            type=self.str2bool,
+            nargs="?",
+            const=True,
+            help=("Activate JSON plugin"),
+        )
+
+
     def dump(self, path):
         """ dumps the arguments into a file """
         with open(path, "w") as f:
