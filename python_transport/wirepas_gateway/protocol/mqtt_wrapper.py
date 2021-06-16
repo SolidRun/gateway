@@ -39,7 +39,6 @@ class MQTTWrapper(Thread):
         self.logger = logger
         self.on_termination_cb = on_termination_cb
         self.on_connect_cb = on_connect_cb
-        self._messages = 0
         # Set to track the unpublished packets
         self._unpublished_mid_set = set()
         # Variable to keep track of latest published packet
@@ -274,16 +273,10 @@ class MQTTWrapper(Thread):
         # Send it to the queue to be published from Mqtt thread
         self._publish_queue.put((topic, payload, qos, retain))
 
-    def _cb_counter_wrapper(self, real_cb):
-        def wrapper(*args, **kwargs):
-            self._messages = self._messages + 1
-            return real_cb(*args, **kwargs)
-        return wrapper
-
     def subscribe(self, topic, cb, qos=2) -> None:
         self.logger.debug("Subscribing to: {}".format(topic))
         self._client.subscribe(topic, qos)
-        self._client.message_callback_add(topic, self._cb_counter_wrapper(cb))
+        self._client.message_callback_add(topic, cb)
 
     @property
     def publish_queue_size(self):
@@ -298,14 +291,6 @@ class MQTTWrapper(Thread):
 
         return delta.total_seconds()
 
-    @property
-    def published_total(self):
-        return self._publish_queue.get_total()
-
-    @property
-    def suscribed_total(self):
-        return self._messages
-
 
 class SelectableQueue(queue.Queue):
     """
@@ -319,7 +304,6 @@ class SelectableQueue(queue.Queue):
         self._lock = Lock()
         self._size = 0
         self._timestamp_last_publish = 0
-        self._total = 0
 
     def fileno(self):
         """
@@ -332,18 +316,12 @@ class SelectableQueue(queue.Queue):
         with self._lock:
             return self._size
 
-    def get_total(self):
-        with self._lock:
-            return self._total
-
-
     def put(self, item, block=True, timeout=None):
         with self._lock:
             if self._size == 0:
                 # Send 1 byte on socket to signal select
                 self._putsocket.send(b"x")
             self._size = self._size + 1
-            self._total = self._total + 1
 
             # Insert item in queue
             super().put(item, block, timeout)
