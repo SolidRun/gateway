@@ -13,7 +13,7 @@ from datetime import datetime
 from paho.mqtt import client as mqtt
 from paho.mqtt.client import connack_string
 
-from wirepas_gateway.utils.solidsense_led import BaseLed
+from wirepas_gateway.utils.connection_monitor import ConnectionMonitorBase
 
 
 class MQTTWrapper(Thread):
@@ -34,13 +34,13 @@ class MQTTWrapper(Thread):
         on_connect_cb=None,
         last_will_topic=None,
         last_will_data=None,
-        led=None
+        connection_monitor=ConnectionMonitorBase()
     ):
         Thread.__init__(self)
         self.daemon = True
         self.running = False
         self.logger = logger
-        self._led = led if led is not None else BaseLed()
+        self._connection_monitor = connection_monitor
         self.on_termination_cb = on_termination_cb
         self.on_connect_cb = on_connect_cb
         # Set to track the unpublished packets
@@ -102,7 +102,7 @@ class MQTTWrapper(Thread):
         self.running = False
         self.connected = False
         self.first_connection_done = False
-        self._led.in_progress()
+        self._connection_monitor.on_connecting()
 
     def _on_connect(self, client, userdata, flags, rc):
         # pylint: disable=unused-argument
@@ -113,7 +113,7 @@ class MQTTWrapper(Thread):
 
         self.first_connection_done = True
         self.connected = True
-        self._led.ok()
+        self._connection_monitor.on_connected()
         if self.on_connect_cb is not None:
             self.on_connect_cb()
 
@@ -126,7 +126,7 @@ class MQTTWrapper(Thread):
                 rc,
             )
             self.connected = False
-            self._led.in_progress()
+            self._connection_monitor.on_connecting()
 
     def _on_publish(self, client, userdata, mid):
         self._unpublished_mid_set.remove(mid)
@@ -185,11 +185,11 @@ class MQTTWrapper(Thread):
 
         if self.connected:
             self.logger.error("MQTT Inner loop, unexpected disconnection")
-            self._led.in_progress()
+            self._connection_monitor.on_connecting()
         elif not self.first_connection_done:
             # It's better to avoid retrying if the first connection was not successful
             self.logger.error("Impossible to connect - authentication failure ?")
-            self._led.off()
+            self._connection_monitor.on_exit()
             return None
 
         # Socket is not opened anymore, try to reconnect for timeout if set
@@ -257,7 +257,7 @@ class MQTTWrapper(Thread):
                 self.logger.exception("Unexpected exception in MQTT wrapper Thread")
                 self.running = False
 
-        self._led.off()
+        self._connection_monitor.on_exit()
         if self.on_termination_cb is not None:
             # As this thread is daemonized, inform the parent that this
             # thread has exited

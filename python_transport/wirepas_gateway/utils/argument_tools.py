@@ -489,11 +489,19 @@ class ParserHelper:
         )
 
         self.gateway.add_argument(
-            "--led",
+            "--status_led",
             action="store",
             type=self.str2int,
             default=0,
-            help="Led id (0 means disable)",
+            help="Id of the status Led (0 means disable)",
+        )
+
+        self.gateway.add_argument(
+            "--status_file",
+            action="store",
+            type=self.str2none,
+            default=None,
+            help="Name of the file where the MQTT status will be stored",
         )
 
     def add_filtering_config(self):
