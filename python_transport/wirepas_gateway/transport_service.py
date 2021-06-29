@@ -860,6 +860,7 @@ def main():
         status_led=SolidSenseLed.ledref(settings.status_led) if settings.status_led != 0 else None,
         status_filename=settings.status_file,
     )
+    monitor.on_exit()  # Override existing file
 
     def _sigterm_handler(self, *args):
         monitor.on_exit()
